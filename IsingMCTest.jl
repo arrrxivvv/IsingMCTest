@@ -1,7 +1,7 @@
 module IsingMCTest
 
 using ShiftedArrays
-using Infiltrator
+# using Infiltrator
 using Random
 using Plots
 
@@ -19,11 +19,14 @@ function isingMC( sz::Int64; itStop = nothing, J = 1, H = 0, itSkip = 10::Int64 
 	rangeCoord = 1:sz;
 	
 	dELst = zeros( 5, 2 );
-	EJ = -4;
+	# EJ = -4;
 	for iJ = 1:5, iH = 1:2
+		EJ = 2*iJ - 6;
 		EH = (-1)^iH;
-		EIsing = EJ * Jsgnd + EH * Hsgnd;
+		dELst[iJ,iH] = -2 * ( EJ * Jsgnd + EH * Hsgnd );
 	end
+	expDELst = exp.(-dELst);
+	# @infiltrate
 	
 	while true
 		# x = rand(rangeCoord);
@@ -31,31 +34,34 @@ function isingMC( sz::Int64; itStop = nothing, J = 1, H = 0, itSkip = 10::Int64 
 		pos = rand(indLst);
 		
 		# @time begin
-		dE = -2 * boolToIntPN(spinArr[pos]) * Hsgnd;
+		# dE = -2 * boolToIntPN(spinArr[pos]) * Hsgnd;
+		idEH = spinArr[pos] ? 2 : 1;
 		rndMC = rand();
 		thresMC = 1;
+		dEJ = 0;
 		for iD = 1 : nDim, iSh = 1 : 2
-			lnkBool = xor( spinArr[pos], spinArrSh[iD,iSh][pos] );
-			lnk = boolToIntPN( lnkBool );
-			dE -= 2*Jsgnd * lnk;
+			lnkBool = !xor( spinArr[pos], spinArrSh[iD,iSh][pos] );
+			# lnk = boolToIntPN( lnkBool );
+			dEJ += lnkBool;
 		end
+		idEJ = dEJ + 1;
+		dE = dELst[idEJ, idEH];
+		# @infiltrate
+		
 		# lnk = xor( spinArr[x,y], spinArr[x+1,y] );
 		# dEJ = -2 * boolToIntPN();
 		isFlip = false;
-		if dE < 0
+		if dE <= 0
 			spinArr[pos] = !spinArr[pos];
 			isFlip = true;
 		else 
-			thresMC = exp( -dE );
+			# thresMC = exp( -dE );
+			thresMC = expDELst[idEJ,idEH];
 			if rndMC < thresMC
 				spinArr[pos] = !spinArr[pos];
 				isFlip = true;
 			end
 		end
-		
-		
-		# display(pltSpins);
-		# @infiltrate
 		
 		if !isnothing(itStop)
 			if it >= itStop
@@ -73,7 +79,7 @@ function isingMC( sz::Int64; itStop = nothing, J = 1, H = 0, itSkip = 10::Int64 
 		end
 		it += 1;
 	end
-	@infiltrate
+	# @infiltrate
 end
 
 function pltUpdateSine( itStop = 50 )
