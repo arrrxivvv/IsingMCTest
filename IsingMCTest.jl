@@ -5,6 +5,101 @@ using ShiftedArrays
 using Random
 using Plots
 
+struct MCMethod
+	genHelperFun::Function;
+	updateFun::Function;
+end
+
+struct SpinArray
+	sz::Int64;
+	nDim::Int64;
+	arr::Array{Bool};
+	arrSh::Array{CircShiftedArray{Bool}};
+	indLst::CartesianIndices;
+	
+	function SpinArray( sz::Int64, nDim::Int64 )
+		arr = zeros( Bool, ntuple( x->sz, nDim ) );
+		arrSh = [ ShiftedArrays.circshift( arr, [ ) for iD = 1 : nDim, iSh = 1:2 ];
+		indLst = CartesianIndices(arr);
+		
+		new( sz, nDim, arr, arrSh, indLst );
+	end
+end
+
+methodMetrop = MCMethod( mcFactsGenFun, mcUpdateMetropFun );
+
+function isingMCMethods( sz::Int64; mcFactsGenFun = mcFactsGenMetropFun, mcUpdateFun = mcUpdateMetropFun, itStop = nothing, J = 1, H = 0, itSkip = 10::Int64 )
+	Jsgnd = -J;
+	Hsgnd = -H;
+	spinArr = rand( Bool, sz, sz );
+	nDim = 2;
+	indLst = CartesianIndices( spinArr );
+	spinArrSh = [ ShiftedArrays.circshift( spinArr, ntuple( dim -> dim == iD ? (-1)^iSh : 0 , nDim ) ) for iD = 1 : nDim, iSh = 1:2 ];
+	
+	mcFactsLst = mcFactsGenFun( Jsgnd, Hsgnd, nDim );
+	
+	pltSpins = heatmap( spinArr, color = cgrad( :greys, rev=true ), legend = :none );
+	display(pltSpins);
+	
+	it = 1;
+	while true
+		mcUpdateFun( spinArr, spinArrSh, indLst, mcFactsLst );
+		
+		if !isnothing(itStop)
+			if it >= itStop
+				break;
+			end
+		end
+		# print( it, ",", isFlip, ", ", pos, ", ", dE, ",", "          \r" )
+		# end
+		
+		if it % itSkip == 0
+			plt = heatmap( spinArr, color = cgrad( :greys, rev=true ), legend = :none );
+			display(plt);
+			# sleep(0.0001);
+		end
+		it += 1;
+	end
+end
+
+function mcFactsGenMetropFun( Jsgnd, Hsgnd, nDim )
+	dELst = zeros( 2*nDim+1, 2 );
+	# EJ = -4;
+	for iJ = 1:2*nDim+1, iH = 1:2
+		EJ = 2 * ( iJ - *( nDim+1 ) );
+		EH = (-1)^iH;
+		dELst[iJ,iH] = -2 * ( EJ * Jsgnd + EH * Hsgnd );
+	end
+	expDELst = exp.(-dELst);
+	
+	return expDELst;
+end
+
+function mcUpdateMetropFun( spinArr, spinArrSh, indLst, mcFactsLst )
+	expDELst = mcFactsLst;
+	nDim = ndims(spinArr);
+	
+	pos = rand(indLst);
+	
+	iEH = spinArr[pos] ? 2 : 1;
+	dEJ = 0;
+	for iDim = 1 : nDim, iSh = 1 : 2
+		lnkBool = !xor( spinArr[pos], spinArrSh[iDim,iSh][pos] );
+		dEJ += lnkBool;
+	end
+	iEJ = dEJ + 1;
+	
+	expDE = expDELst[iEJ,iEH];
+	if expDE >= 1
+		spinArr[pos] = !spinArr[pos];
+	else
+		rndThres = rand();
+		if rndThres < expDE
+			spinArr[pos] = !spinArr[pos]
+		end
+	end
+end
+
 function isingMC( sz::Int64; itStop = nothing, J = 1, H = 0, itSkip = 10::Int64 )
 	Jsgnd = -J;
 	Hsgnd = -H;
