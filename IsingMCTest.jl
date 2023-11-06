@@ -1,7 +1,7 @@
 module IsingMCTest
 
 using ShiftedArrays
-# using Infiltrator
+using Infiltrator
 using Random
 using Plots
 
@@ -23,11 +23,13 @@ end
 
 abstract type MCUpdater end
 
-function mcUpdaterGenFun( updaterType::DataType, Jsgnd, Hsgnd, nDim ) 
-	return updaterType( Jsgnd, Hsgnd, nDim );
+function mcUpdaterGenFun( updaterType::DataType, Jsgnd, Hsgnd, spinArrObj::SpinArray ) 
+	return updaterType( Jsgnd, Hsgnd, spinArrObj );
 end
 
-function mcUpdateFun!( spinArrObj::SpinArray, updater::MCUpdater ) end
+function mcUpdateFun!( spinArrObj::SpinArray, updater::MCUpdater ) 
+	error( "IsingMCTest: update method not defined yet" );
+end
 
 function isingMCMethods( sz::Int64; updaterType::DataType = MetropMCUpdater, itStop = nothing, J = 1, H = 0, itSkip = 10::Int64 )
 	Jsgnd = -J;
@@ -35,10 +37,11 @@ function isingMCMethods( sz::Int64; updaterType::DataType = MetropMCUpdater, itS
 	nDim = 2;
 	spinArrObj = SpinArray( sz, nDim );
 	
-	mcUpdater = mcUpdaterGenFun( updaterType, Jsgnd, Hsgnd, nDim );
+	mcUpdater = mcUpdaterGenFun( updaterType, Jsgnd, Hsgnd, spinArrObj );
 	
 	pltSpins = heatmap( spinArrObj.arr, color = cgrad( :greys, rev=true ), legend = :none );
 	display(pltSpins);
+	# sleep(0.0001);
 	
 	it = 1;
 	while true
@@ -56,6 +59,7 @@ function isingMCMethods( sz::Int64; updaterType::DataType = MetropMCUpdater, itS
 			plt = heatmap( spinArrObj.arr, color = cgrad( :greys, rev=true ), legend = :none );
 			display(plt);
 			# sleep(0.0001);
+			# @infiltrate
 		end
 		it += 1;
 	end
@@ -63,10 +67,15 @@ end
 
 isingMCMetrop( sz::Int64; itStop = nothing, J = 1, H = 0, itSkip::Int64 = 10 ) = isingMCMethods( sz; updaterType = MetropMCUpdater, itStop = itStop, J = J, H = H, itSkip = itSkip );
 
+isingMCHeatBath( sz::Int64; itStop = nothing, J = 1, H = 0, itSkip::Int64 = 10 ) = isingMCMethods( sz; updaterType = HeatBathMCUpdater, itStop = itStop, J = J, H = H, itSkip = itSkip );
+
+isingMCWolff( sz::Int64; itStop = nothing, J = 1, H = 0, itSkip::Int64 = 10 ) = isingMCMethods( sz; updaterType = WolffMCUpdater, itStop = itStop, J = J, H = H, itSkip = itSkip );
+
 struct MetropMCUpdater <: MCUpdater
 	expDELst::Matrix{Float64};
 	
-	function MetropMCUpdater( Jsgnd, Hsgnd, nDim )
+	function MetropMCUpdater( Jsgnd, Hsgnd, spinArrObj::SpinArray )
+		nDim = spinArrObj.nDim;
 		dELst = zeros( 2*nDim+1, 2 );
 		for iJ = 1:2*nDim+1, iH = 1:2
 			EJ = 2 * ( iJ - *( nDim+1 ) );
@@ -97,6 +106,75 @@ function mcUpdateFun!( spinArrObj::SpinArray, mcUpdater::MetropMCUpdater )
 		rndThres = rand();
 		if rndThres < expDE
 			spinArrObj.arr[pos] = !spinArrObj.arr[pos]
+		end
+	end
+end
+
+struct HeatBathMCUpdater <: MCUpdater
+	probUpLst::Array{Float64};
+	
+	function HeatBathMCUpdater( Jsgnd, Hsgnd, spinArrObj::SpinArray )
+		nDim = spinArrObj.nDim;
+		szJ = 2*nDim+1;
+		EUpLst = zeros( szJ );
+		probUpLst = similar(EUpLst);
+		for iJ = 1 : szJ
+			EUpLst[iJ] = Jsgnd * 2*(iJ-1-nDim) + Hsgnd;
+		end
+		probUpLst .= 1 ./ ( 1 .+ exp.(+ 2*EUpLst) );
+		
+		new(probUpLst);
+	end
+end
+
+function mcUpdateFun!( spinArrObj::SpinArray, mcUpdater::HeatBathMCUpdater )
+	pos = rand(spinArrObj.indLst);
+	
+	iJ = 1;
+	for iDim = 1:spinArrObj.nDim, iSh = 1:2
+		iJ += spinArrObj.arrSh[iDim,iSh][pos];
+	end
+	
+	thresRand = rand();
+	spinArrObj.arr[pos] = thresRand < mcUpdater.probUpLst[iJ] ? true : false ;
+end
+
+struct WolffMCUpdater <: MCUpdater
+	pFlip::Float64;
+	posToCheckLst::Vector{<:CartesianIndex};
+	posShLst::Array{CircShiftedArray{<:CartesianIndex}};
+	
+	function WolffMCUpdater( Jsgnd, Hsgnd, spinArrObj::SpinArray )
+		nDim = spinArrObj.nDim;
+		if Jsgnd > 0 
+			throw( DomainError(Jsgnd, "ferromagnetic interaction only") );
+		end
+		pFlip = 1 - exp( 2*Jsgnd );
+		posToCheckLst = Vector{CartesianIndex{nDim}}(undef,0);
+		posShLst = [ ShiftedArrays.circshift( spinArrObj.indLst, ntuple( ( dim-> dim == iDim ? (-1)^iSh : 0 ), nDim ) ) for iDim = 1 : nDim, iSh = 1:2 ];
+		
+		new( pFlip, posToCheckLst, posShLst );
+	end
+end
+
+function mcUpdateFun!( spinArrObj::SpinArray, mcUpdater::WolffMCUpdater )
+	pos = rand(spinArrObj.indLst);
+	spinFlipped = !spinArrObj.arr[pos];
+	push!( mcUpdater.posToCheckLst, pos );
+	
+	while !isempty( mcUpdater.posToCheckLst )
+		pos = popfirst!( mcUpdater.posToCheckLst );
+		if spinArrObj.arr[pos] == spinFlipped
+			continue;
+		end
+		spinArrObj.arr[pos] = spinFlipped;
+		for iDim = 1 : spinArrObj.nDim, iSh = 1 : 2
+			if spinArrObj.arrSh[iDim,iSh][pos] != spinFlipped 
+				thresRnd = rand();
+				if thresRnd < mcUpdater.pFlip
+					push!( mcUpdater.posToCheckLst, mcUpdater.posShLst[iDim,iSh][pos] );
+				end
+			end
 		end
 	end
 end
