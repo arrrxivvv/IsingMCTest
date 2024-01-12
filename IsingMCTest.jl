@@ -4,6 +4,7 @@ using ShiftedArrays
 using Infiltrator
 using Random
 using Plots
+using Statistics
 
 struct SpinArray
 	sz::Int64;
@@ -31,7 +32,7 @@ function mcUpdateFun!( spinArrObj::SpinArray, updater::MCUpdater )
 	error( "IsingMCTest: update method not defined yet" );
 end
 
-function isingMCMethods( sz::Int64; updaterType::DataType = MetropMCUpdater, itStop = nothing, J = 1, H = 0, itSkip = 10::Int64 )
+function isingMCMethods( sz::Int64; updaterType::DataType = MetropMCUpdater, itStop = nothing, J = 1, H = 0, itSkip = 10::Int64, isPlot = false, isMessage = false )
 	Jsgnd = -J;
 	Hsgnd = -H;
 	nDim = 2;
@@ -39,23 +40,34 @@ function isingMCMethods( sz::Int64; updaterType::DataType = MetropMCUpdater, itS
 	
 	mcUpdater = mcUpdaterGenFun( updaterType, Jsgnd, Hsgnd, spinArrObj );
 	
-	pltSpins = heatmap( spinArrObj.arr, color = cgrad( :greys, rev=true ), legend = :none );
-	display(pltSpins);
-	# sleep(0.0001);
+	if isPlot
+		pltSpins = heatmap( spinArrObj.arr, color = cgrad( :greys, rev=true ), legend = :none );
+		display(pltSpins);
+		# sleep(0.0001);
+	end
+	
+	if !isnothing(itStop)
+		meanSpinLst = zeros(itStop);
+	else
+		meanSpinLst = nothing;
+	end
 	
 	it = 1;
 	while true
 		mcUpdateFun!( spinArrObj, mcUpdater );
 		
 		if !isnothing(itStop)
+			meanSpinLst[it] = 1 - 2 * mean( spinArrObj.arr );
 			if it >= itStop
 				break;
 			end
 		end
-		# print( it, ",", "          \r" )
+		if isMessage
+			print( it, ", ", "<s> = ", 1 - 2 * mean( spinArrObj.arr ),  "          \r" )
+		end
 		# end
 		
-		if it % itSkip == 0
+		if isPlot && it % itSkip == 0
 			plt = heatmap( spinArrObj.arr, color = cgrad( :greys, rev=true ), legend = :none );
 			display(plt);
 			# sleep(0.0001);
@@ -63,6 +75,8 @@ function isingMCMethods( sz::Int64; updaterType::DataType = MetropMCUpdater, itS
 		end
 		it += 1;
 	end
+	
+	return meanSpinLst;
 end
 
 isingMCMetrop( sz::Int64; itStop = nothing, J = 1, H = 0, itSkip::Int64 = 10 ) = isingMCMethods( sz; updaterType = MetropMCUpdater, itStop = itStop, J = J, H = H, itSkip = itSkip );
@@ -177,6 +191,67 @@ function mcUpdateFun!( spinArrObj::SpinArray, mcUpdater::WolffMCUpdater )
 			end
 		end
 	end
+end
+
+struct HeatBathCheckerMCUpdater <: MCUpdater
+	pUpLst::Vector{Float64};
+	posABLst::Vector{Array{<:CartesianIndex}};
+	
+	function HeatBathCheckerMCUpdater( Jsgnd, Hsgnd, spinArrObj::SpinArray )
+		nDim = spinArrObj.nDim;
+		numNeighbor = 2*nDim;
+		numNeighborSum = 2*nDim + 1;
+		numUpDown = 2;
+		jIncre = -2;
+		
+		pUpLst = zeros( numNeighborSum );
+		jSum = numNeighbor;
+		for iJ = 1 : numNeighborSum
+			Eval = Hsgnd + Jsgnd * jSum;
+			pUpLst[iJ] = 1 / ( 1 + exp(2*Eval) );
+			jSum += jIncre;
+		end
+		
+		iA = 1;
+		iB = 1;
+		lenPosLst = length(spinArrObj.indLst);
+		lenPosLstAB = Int64( lenPosLst / 2 );
+		# @infiltrate
+		posABLst = [ Vector{CartesianIndex{nDim}}(undef,lenPosLstAB) for iAB = 1 : 2 ];
+		for pos in spinArrObj.indLst
+			idSum = 0;
+			for dim = 1 : nDim
+				idSum += pos[dim];
+			end
+			if idSum % 2 == 1
+				posABLst[1][iA] = pos;
+				iA += 1;
+			else
+				posABLst[2][iB] = pos;
+				iB += 1;
+			end
+		end
+		
+		new( pUpLst, posABLst );
+	end
+end
+
+function mcUpdateFun!( spinArrObj::SpinArray, mcUpdater::HeatBathCheckerMCUpdater )
+	for iAB = 1 : 2
+		Threads.@threads for pos in mcUpdater.posABLst[iAB]
+			iJ = 1;
+			for dim = 1 : spinArrObj.nDim, iSh = 1:2
+				iJ += spinArrObj.arrSh[dim,iSh][pos];
+			end
+			pUp = rand();
+			if pUp < mcUpdater.pUpLst[iJ]
+				spinArrObj.arr[pos] = false;
+			else
+				spinArrObj.arr[pos] = true;
+			end
+		end
+	end
+	# @infiltrate
 end
 
 function isingMC( sz::Int64; itStop = nothing, J = 1, H = 0, itSkip = 10::Int64 )
